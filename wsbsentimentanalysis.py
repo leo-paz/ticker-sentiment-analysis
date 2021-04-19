@@ -20,6 +20,7 @@ import json
 import time
 import datetime
 import requests
+import sys
 from tqdm.auto import tqdm
 
 import numpy as np
@@ -89,9 +90,9 @@ def collectSubData(subm):
     subData.append(flair)
     subStats.append(subData)
 
-after_date = "04/01/2018"
-#after_date = "16/03/2020"
-before_date = "23/03/2021"
+#after_date = "04/01/2018"
+after_date = "10/04/2017"
+before_date = "10/04/2021"
 
 #Subreddit to query
 sub='wallstreetbets'
@@ -163,20 +164,18 @@ for url in tqdm(df_1['url'].tolist()):
 Use some stop words that might create ambiguity with stock names in comments
 """
 
-#!wget https://gist.githubusercontent.com/ZohebAbai/513218c3468130eacff6481f424e4e64/raw/b70776f341a148293ff277afa0d0302c8c38f7e2/gist_stopwords.txt
-
-gist_file = open("gist_stopwords.txt", "r")
+stopwords_list_file = open("ticker_stop_words.csv", "r")
 try:
-    content = gist_file.read()
+    content = stopwords_list_file.read()
     stop_words = content.split(",")
 finally:
-    gist_file.close()
+    stopwords_list_file.close()
 
 #Add more stop words that are used in the discussions
-stop_words += ['ATH', 'SAVE', 'US', 'ALL', 'LOVE', 'FOR', 'ME', 
-               'GET', "BEAT", 'JACK', "PUMP", "BIG", "KIDS", 'STAY', 
-               'TRUE', 'EDIT','PLAY', "ROCK", "NICE", "DIE", "COST", 
-               "WORK", "MF"]
+stop_words += ['ATH', 'US', 'LOVE', 'ME', 
+               'GET', 'PUMP', 'KIDS', 
+               'TRUE', 'EDIT', 'DIE', 
+               'WORK', 'MF']
 
 """- Remove stocks with only nubers as their mention will be next to none,
 
@@ -296,53 +295,67 @@ scores.set_index("bloomberg_ticker").to_csv("Signal_WSB_ema.csv", index=True)
 
 ## merge with spy price and plot
 
-spy=ffn.get('spy', start='2010-01-01')
-spy_vals=[]
-for date in tqdm(df_1['date'].astype(str).values):
-    try:
-        spy_vals.append(float(spy.loc[date]))
-    except KeyError:
-        spy_vals.append(None)
-        
-df_1['spy']=spy_vals
 
-df_1=df_1[['date','sentiment score','spy']]
-df_1=df_1.set_index('date')
-df_1=df_1[df_1['spy'].notna()]
+def plot_fft(df_1,ticker_symbol):
+    spy=ffn.get(ticker_symbol, start='2010-01-01')
+    spy_vals=[]
 
-df_1.plot(secondary_y='sentiment score', figsize=(16, 10))
+    for date in tqdm(df_1['date'].astype(str).values):
+        try:
+            spy_vals.append(float(spy.loc[date]))
+        except KeyError:
+            spy_vals.append(None)
+            
+    df_1[ticker_symbol]=spy_vals
 
-## fourier transform
+    df_1=df_1[['date','sentiment score',ticker_symbol]]
+    df_1=df_1.set_index('date')
+    df_1=df_1[df_1[ticker_symbol].notna()]
 
-close_fft = np.fft.fft(np.asarray(df_1['sentiment score'].tolist()))
-fft_df = pd.DataFrame({'fft':close_fft})
-fft_df['absolute'] = fft_df['fft'].apply(lambda x: np.abs(x))
-fft_df['angle'] = fft_df['fft'].apply(lambda x: np.angle(x))
-fft_list = np.asarray(fft_df['fft'].tolist())
+    df_1.plot(secondary_y='sentiment score', figsize=(16, 10))
 
-for num_ in [5, 10, 15, 20]:
-    fft_list_m10= np.copy(fft_list); fft_list_m10[num_:-num_]=0
-    df_1['fourier '+str(num_)]=np.fft.ifft(fft_list_m10)
+    ## fourier transform
 
-df_1[['sentiment score', 'fourier 5', 'fourier 10', 'fourier 15', 'fourier 20']].plot(figsize=(16, 10))
+    close_fft = np.fft.fft(np.asarray(df_1['sentiment score'].tolist()))
+    fft_df = pd.DataFrame({'fft':close_fft})
+    fft_df['absolute'] = fft_df['fft'].apply(lambda x: np.abs(x))
+    fft_df['angle'] = fft_df['fft'].apply(lambda x: np.angle(x))
+    fft_list = np.asarray(fft_df['fft'].tolist())
 
-df_1[['spy', 'fourier 20']].plot(secondary_y='fourier 20', figsize=(16, 10))
+    for num_ in [5, 10, 15, 20]:
+        fft_list_m10= np.copy(fft_list); fft_list_m10[num_:-num_]=0
+        df_1['fourier '+str(num_)]=np.fft.ifft(fft_list_m10)
 
-#normalize
-from sklearn.preprocessing import MinMaxScaler
-sc= MinMaxScaler(feature_range=(0,1))
-df_1['norm_price']=sc.fit_transform(df_1['spy'].to_numpy().reshape(-1, 1))
-df_1['spy log']=np.log(df_1['spy']/df_1['spy'].shift(1))
-df_1['norm_sentiment']=sc.fit_transform(df_1['sentiment score'].to_numpy().reshape(-1, 1))
-df_1['norm_fourier5']=sc.fit_transform(np.asarray(list([(float(x)) for x in df_1['fourier 5'].to_numpy()])).reshape(-1, 1))
-df_1['norm_fourier10']=sc.fit_transform(np.asarray(list([(float(x)) for x in df_1['fourier 10'].to_numpy()])).reshape(-1, 1))
-df_1['norm_fourier15']=sc.fit_transform(np.asarray(list([(float(x)) for x in df_1['fourier 15'].to_numpy()])).reshape(-1, 1))
-df_1['norm_fourier20']=sc.fit_transform(np.asarray(list([(float(x)) for x in df_1['fourier 20'].to_numpy()])).reshape(-1, 1))
+    df_1[['sentiment score', 'fourier 5', 'fourier 10', 'fourier 15', 'fourier 20']].plot(figsize=(16, 10))
 
-df_1[['norm_price', 'norm_sentiment', 'norm_fourier5', 'norm_fourier20']].plot(figsize=(16, 10))
+    df_1[[ticker_symbol, 'fourier 20']].plot(secondary_y='fourier 20', figsize=(16, 10))
+
+    #normalize
+    from sklearn.preprocessing import MinMaxScaler
+    sc= MinMaxScaler(feature_range=(0,1))
+    df_1['norm_price']=sc.fit_transform(df_1[ticker_symbol].to_numpy().reshape(-1, 1))
+    df_1[ticker_symbol + ' log']=np.log(df_1[ticker_symbol]/df_1[ticker_symbol].shift(1))
+    df_1['norm_sentiment']=sc.fit_transform(df_1['sentiment score'].to_numpy().reshape(-1, 1))
+    df_1['norm_fourier5']=sc.fit_transform(np.asarray(list([(float(x)) for x in df_1['fourier 5'].to_numpy()])).reshape(-1, 1))
+    df_1['norm_fourier10']=sc.fit_transform(np.asarray(list([(float(x)) for x in df_1['fourier 10'].to_numpy()])).reshape(-1, 1))
+    df_1['norm_fourier15']=sc.fit_transform(np.asarray(list([(float(x)) for x in df_1['fourier 15'].to_numpy()])).reshape(-1, 1))
+    df_1['norm_fourier20']=sc.fit_transform(np.asarray(list([(float(x)) for x in df_1['fourier 20'].to_numpy()])).reshape(-1, 1))
+
+    
+    df_1[['norm_price', 'norm_sentiment', 'norm_fourier5', 'norm_fourier20']].plot(figsize=(16, 10))
+
+    import datetime
+    filename = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+
+    plt.savefig(ticker_symbol + "_" + after_date.replace('/','-') +"_"+ before_date.replace('/','-')+'_'+filename+'.pdf')
 
 
+ticker_symbol = 'spy'
+original_df_1 = df_1
 
+plot_fft(original_df_1, ticker_symbol)
+
+print()
 """---
 
 ### This notebook is built upon the works of,
