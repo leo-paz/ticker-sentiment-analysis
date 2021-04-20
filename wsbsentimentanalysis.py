@@ -13,76 +13,70 @@ Original file is located at
 #!pip install vaderSentiment
 #!pip install ffn
 
-import gc
-import re 
-import csv
+import os
 import json
 import time
 import datetime
 import requests
-import sys
-from tqdm.auto import tqdm
-
 import numpy as np
 import pandas as pd
 import seaborn as sn
 import matplotlib.pyplot as plt
+import praw  # reddit data api
+import ffn  # for loading financial data
+import numerapi  # for numerai tickers
 
-import praw #reddit data api
-import ffn #for loading financial data
-import numerapi #for numerai tickers
-
-from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer #VADER sentiment model
+# VADER sentiment model
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+from tqdm.auto import tqdm
+from sklearn.preprocessing import MinMaxScaler
 
 # Commented out IPython magic to ensure Python compatibility.
 # %matplotlib inline
 
-import tensorflow as tf
-from tensorflow import keras
-tf.test.gpu_device_name()
+import argparse
+parser = argparse.ArgumentParser()
+parser.add_argument('--startDate', metavar='-s', type=str,
+                    help="Start date from when to start capturing", required=True)
+parser.add_argument('--endDate', metavar='-e', type=str,
+                    help="End date from when to end capturing", required=True)
+parser.add_argument('--ticker', metavar='-t', type=str,
+                    help="Single ticker to find sentiment value for")
+parser.add_argument('--tickers', metavar='-ts', nargs='+',
+                    help="List of multiple tickers")
+args = parser.parse_args()
 
-"""# Data Collection
+start_date = args.startDate
+end_date = args.endDate
 
-### Tickers we want
-"""
+to_date = str(
+    int(time.mktime(datetime.datetime.strptime(end_date, "%d/%m/%Y").timetuple())))
+from_date = str(
+    int(time.mktime(datetime.datetime.strptime(start_date, "%d/%m/%Y").timetuple())))
 
-napi = numerapi.SignalsAPI()
+subReddit = 'wallstreetbets'
 
-eligible_tickers = pd.Series(napi.ticker_universe(), name="bloomberg_ticker")
-print(f"Number of eligible tickers : {len(eligible_tickers)}")
-print(eligible_tickers.head(10))
-
-ticker_map = pd.read_csv(
-        'https://numerai-signals-public-data.s3-us-west-2.amazonaws.com/signals_ticker_map_w_bbg.csv'
-)
-print(len(ticker_map))
-
-#Yahoo <-> Bloomberg mapping
-yfinance_tickers = eligible_tickers.map(
-        dict(zip(ticker_map["bloomberg_ticker"], ticker_map["yahoo"]))
-    ).dropna()
-
-bloomberg_tickers = ticker_map["bloomberg_ticker"]
-print(f"Number of eligible, mapped tickers: {len(yfinance_tickers)}")
+numerAI = numerapi.SignalsAPI()
+eligible_tickers = pd.Series(
+    numerAI.ticker_universe(), name="bloomberg_ticker")
+numerAI_ticker_map = pd.read_csv(
+    'https://numerai-signals-public-data.s3-us-west-2.amazonaws.com/signals_ticker_map_w_bbg.csv')
+bb_tickers = numerAI_ticker_map["bloomberg_ticker"]
 
 
-
-"""# Sentiment Analysis with VADER
-
-## Scrape Comments from Reddit Using Pushshift and PRAW
-"""
-
-#function to get data from pushshift api
-def getPushshiftData(query, after, before, sub):
-    url = 'https://api.pushshift.io/reddit/search/submission/?title='+str(query)+'&size=1000&after='+str(after)+'&before='+str(before)+'&subreddit='+str(sub)
-    print(url)
-    r = requests.get(url)
+def get_Pushshift_Data(query, after, before, sub):
+    reURL = 'https://api.pushshift.io/reddit/search/submission/?title=' + \
+        str(query)+'&size=1000&after='+str(after) + \
+        '&before='+str(before)+'&subreddit='+str(sub)
+    print(reURL)
+    r = requests.get(reURL)
     data = json.loads(r.text)
     return data['data']
 
-#get relevant data from data extracted using previous function
-def collectSubData(subm):
-    subData = [subm['id'], subm['title'], subm['url'], datetime.datetime.fromtimestamp(subm['created_utc']).date()]
+
+def get_subreddit_data(subm):
+    subData = [subm['id'], subm['title'], subm['url'],
+               datetime.datetime.fromtimestamp(subm['created_utc']).date()]
     try:
         flair = subm['link_flair_text']
     except KeyError:
@@ -90,91 +84,79 @@ def collectSubData(subm):
     subData.append(flair)
     subStats.append(subData)
 
-#after_date = "04/01/2018"
-after_date = "10/04/2017"
-before_date = "10/04/2021"
 
-#Subreddit to query
-sub='wallstreetbets'
-#before and after dates
-before = str(int(time.mktime(datetime.datetime.strptime(before_date, "%d/%m/%Y").timetuple()))) #july 10 2020
-after = str(int(time.mktime(datetime.datetime.strptime(after_date, "%d/%m/%Y").timetuple()))) #july 1 2017
-#query string
+# Subreddit information
+channel = "Daily Discussion"
 query = "Daily Discussion"
 subCount = 0
 subStats = []
 
-data = getPushshiftData(query, after, before, sub)
-# Will run until all posts have been gathered 
-# from the 'after' date up until before date
-while len(data) > 0:
-    for submission in data:
-        collectSubData(submission)
-        subCount+=1
-    # Calls getPushshiftData() with the created date of the last submission
-    print(len(data))
-    print(str(datetime.datetime.fromtimestamp(data[-1]['created_utc'])))
-    after = data[-1]['created_utc']
+# Get all the data from pushshift and parse it below
+response_body_data = get_Pushshift_Data(query, from_date, to_date, subReddit)
+while len(response_body_data) > 0:
+    for submission in response_body_data:
+        get_subreddit_data(submission)
+        subCount += 1
+    print(len(response_body_data))
+    print(str(datetime.datetime.fromtimestamp(
+        response_body_data[-1]['created_utc'])))
+    from_date = response_body_data[-1]['created_utc']
     try:
-        data = getPushshiftData(query, after, before, sub)
+        response_body_data = get_Pushshift_Data(
+            query, from_date, to_date, subReddit)
     except Exception as e:
         print(e)
 
-#organize data into dataframe
-data={}
-ids=[]
-titles=[]
-urls=[]
-dates=[]
-flairs=[]
+# Organize into a dataframe
+response_body_data = {}
+reddit_ids = []
+subreddit_titles = []
+urls = []
+dates = []
+flairs = []
+
 for stat in subStats:
-    ids.append(stat[0])
-    titles.append(stat[1])
+    reddit_ids.append(stat[0])
+    subreddit_titles.append(stat[1])
     urls.append(stat[2])
     dates.append(stat[3])
     flairs.append(stat[4])
-data['id']=ids
-data['title']=titles
-data['url']=urls
-data['date']=dates
-data['flair']=flairs
-df_1=pd.DataFrame(data)
-df_1=df_1[(df_1['flair']=='Daily Discussion')]
+response_body_data['id'] = reddit_ids
+response_body_data['title'] = subreddit_titles
+response_body_data['url'] = urls
+response_body_data['date'] = dates
+response_body_data['flair'] = flairs
+dataFrame_1 = pd.DataFrame(response_body_data)
+dataFrame_1 = dataFrame_1[(dataFrame_1['flair'] == channel)]
 
 """## Download data from Reddit using praw"""
-
-#connect to reddit api
 reddit = praw.Reddit(client_id='1XambE_tem5SOw',
-                     client_secret='F5ihhavbKJQ_-E5aLMw5OgAZ-bAz4w', 
-                     user_agent='example')
+                     client_secret='F5ihhavbKJQ_-E5aLMw5OgAZ-bAz4w',
+                     user_agent='Requests')
 
-#collect comments using praw
-comments_by_day=[]
-for url in tqdm(df_1['url'].tolist()):
+daily_comments = []
+for url in tqdm(dataFrame_1['url'].tolist()):
     try:
         submission = reddit.submission(url=url)
         submission.comments.replace_more(limit=0)
-        comments=list([(comment.body) for comment in submission.comments])
+        comments = list([(comment.body) for comment in submission.comments])
     except:
-        comments=None
-    comments_by_day.append(comments)
+        comments = None
+    daily_comments.append(comments)
 
 """## Symbol filtering
-
 Use some stop words that might create ambiguity with stock names in comments
 """
-
 stopwords_list_file = open("ticker_stop_words.csv", "r")
 try:
-    content = stopwords_list_file.read()
-    stop_words = content.split(",")
+    file_data = stopwords_list_file.read()
+    stop_words = file_data.split(",")
 finally:
     stopwords_list_file.close()
 
-#Add more stop words that are used in the discussions
-stop_words += ['ATH', 'US', 'LOVE', 'ME', 
-               'GET', 'PUMP', 'KIDS', 
-               'TRUE', 'EDIT', 'DIE', 
+stop_words += ['ATH', 'US', 'LOVE', 'ME',
+               'GET', 'PUMP', 'KIDS',
+               'TRUE', 'EDIT', 'DIE',
                'WORK', 'MF']
 
 """- Remove stocks with only nubers as their mention will be next to none,
@@ -182,180 +164,162 @@ stop_words += ['ATH', 'US', 'LOVE', 'ME',
 - Remove symbols with length smaller than 2 to reduce similarities between common English words.
 """
 
-filter_init = bloomberg_tickers#[bloomberg_tickers.apply(lambda x: (x.split(" ")[1] == "US") | (x.split(" ")[1] == "CA"))]
-filter_init = filter_init.apply(lambda x: x.split(" ")[0])
-ticks = filter_init[filter_init.str.len()>=2].values
+filter_less = bb_tickers
+filter_less = filter_less.apply(lambda x: x.split(" ")[0])
+less_than_two_ticks = filter_less[filter_less.str.len() >= 2].values
 
-ticks = [t for t in ticks if not str.isdigit(t)]
-ticks = [t for t in ticks if t not in stop_words]
+less_than_two_ticks = [t for t in less_than_two_ticks if not str.isdigit(t)]
+less_than_two_ticks = [t for t in less_than_two_ticks if t not in stop_words]
 
-"BB" in ticks
-
-#Assert tick is not in stop words
+# Filter out based on the stop words we used earlier
 ticks_ = []
-for tic in ticks:
+for tic in less_than_two_ticks:
     if tic.lower() not in stop_words:
         ticks_.append(tic)
 
-ticks = ticks_
+less_than_two_ticks = ticks_
 
-np.intersect1d(ticks, [s.upper() for s in stop_words])
+np.intersect1d(less_than_two_ticks, [s.upper() for s in stop_words])
 
 """## **Idea is:**
-
 1. Score all comments for a day based on sentiment
-
-2. Log all tickers mentioned in those comments
-
+2. log all tickers mentioned in those comments
 3. Assign the daily sentiment to tickers involved
-
 ## Run VADER Analysis
 """
-
 analyser = SentimentIntensityAnalyzer()
-
-scores = [] #For entire market
-daily_tick_sentiments = [] #array of dictionaries with daily ticker sentiments
-
-for comments in tqdm(comments_by_day):
+sentiment_scores = []  # For entire market
+daily_sentiments = []  # array of dictionaries with daily ticker sentiments
+for comments in tqdm(daily_comments):
+    sent_ticks = dict()
     sentiment_score = 0
-    c_tickers = []
-    ticks_sent = dict()          #daily sentiments for tickers
-    for tick in ticks:
-        ticks_sent[tick] = 0     #initializing with 0
+    for currTick in less_than_two_ticks:
+        sent_ticks[currTick] = 0
     try:
         for comment in comments:
+            ticks_in_comment = []
+            for currTick in less_than_two_ticks:
+                # Check if current comment contains any of the tickers
+                if (" " + currTick + " " in comment) and (currTick.lower() not in stop_words):
+                    ticks_in_comment.append(currTick)
+            # Get a sentiment score for this comment
+            comment_score = analyser.polarity_scores(comment)["compound"]
 
-            ticks_in_comment = []    
-            for tick in ticks:
-                #Scanning for ticks mentioned in the comment
-                if (" " + tick + " " in comment) and (tick.lower() not in stop_words):
-                    ticks_in_comment.append(tick)
+            # Update the score
+            for currTick in ticks_in_comment:
+                sent_ticks[currTick] = comment_score + sent_ticks[currTick]
 
-            comment_score = analyser.polarity_scores(comment)["compound"]  #general score
-
-            for tick in ticks_in_comment:
-                #updating the scores of comment to all ticks in the comment
-                ticks_sent[tick] = comment_score + ticks_sent[tick]
             sentiment_score = sentiment_score + comment_score
-
-        daily_tick_sentiments.append(ticks_sent) 
+        daily_sentiments.append(sent_ticks)
     except TypeError:
         sentiment_score = 0
 
-    scores.append(sentiment_score)
+    sentiment_scores.append(sentiment_score)
 
-df_1["sentiment score"] = scores
+dataFrame_1["sentiment score"] = sentiment_scores
 
 daily_arr = []
-for day in daily_tick_sentiments:
+for day in daily_sentiments:
     daily_arr.append(pd.Series(day))
 
-day_df = pd.concat(daily_arr, 1)
-newvals = df_1.date.values[:len(df_1.date.values)]
+daily_dataframe = pd.concat(daily_arr, 1)
+values_ = dataFrame_1.date.values[:len(dataFrame_1.date.values)]
+daily_dataframe.columns = values_
 
-day_df.columns = newvals
-
-day_df
-
-#select 400 extreme symbols as theere are only a few symbols 
-#that are discussed daily
-top_up = day_df.sum(1).nlargest(200).index
-top_down = day_df.sum(1).nsmallest(200).index
-
-tickers = top_down.append(top_up)
-tickers
+up_top = daily_dataframe.sum(1).nlargest(200).index
+down_top = daily_dataframe.sum(1).nsmallest(200).index
+tickers = down_top.append(up_top)
 
 """1. Transpose, 
 2. calculate rolling average
 3. Transpose
 """
+# Sum all days
+sum_days = daily_dataframe[daily_dataframe.columns[:]].T.rolling(window=14).sum().T
+sum_days = sum_days.iloc[:, -1]
+sum_days = sum_days.loc[tickers]
 
-ps = day_df[day_df.columns[:]].T.rolling(window=14).sum().T #Rolling sum over all dates
-
-ps = ps.iloc[:, -1] #Scores for yesterday
-#ps = ps.iloc[:, -7:].sum(1) #This can also be used
-
-#ps = ps[ps!=0] #Remove tickers with no 0 sentiment scores
-ps = ps.loc[tickers] #Or choose specific tickers
-
-scores = ps.rank(pct=True).sort_values(ascending=False).reset_index()
-scores.columns = ["bloomberg_ticker", "signal"]
-scores
+sentiment_scores = sum_days.rank(pct=True).sort_values(ascending=False).reset_index()
+sentiment_scores.columns = ["bloomberg_ticker", "signal"]
 
 """map shortned symbols back to bloomberg symbols"""
-
-mapping = pd.Series(
-    bloomberg_tickers.values, index=bloomberg_tickers.apply(lambda x: x.split(" ")[0])
-)
-scores["bloomberg_ticker"] = scores["bloomberg_ticker"].apply(
-    lambda x: mapping[x] if type(mapping[x]) == str else mapping[x].values[0]
-)
-scores.set_index("bloomberg_ticker").to_csv("Signal_WSB_ema.csv", index=True)
-
-## merge with spy price and plot
+mapping = pd.Series(bb_tickers.values, index=bb_tickers.apply(
+    lambda x: x.split(" ")[0]))
+sentiment_scores["bloomberg_ticker"] = sentiment_scores["bloomberg_ticker"].apply(
+    lambda x: mapping[x] if type(mapping[x]) == str else mapping[x].values[0])
+sentiment_scores.set_index("bloomberg_ticker").to_csv(
+    "Signal_WSB_ema.csv", index=True)
 
 
-def plot_fft(df_1,ticker_symbol):
-    spy=ffn.get(ticker_symbol, start='2010-01-01')
-    spy_vals=[]
+def plot_fft(cDataFrame, ticker_symbol):
+    # We get the values from the ticker at an earlier start date
+    target_ticker = ffn.get(ticker_symbol, start='2010-01-01')
+    target_ticker_values = []
 
-    for date in tqdm(df_1['date'].astype(str).values):
+    # Get all values since that start date
+    for date in tqdm(cDataFrame['date'].astype(str).values):
         try:
-            spy_vals.append(float(spy.loc[date]))
+            target_ticker_values.append(float(target_ticker.loc[date]))
         except KeyError:
-            spy_vals.append(None)
-            
-    df_1[ticker_symbol]=spy_vals
+            target_ticker_values.append(None)
 
-    df_1=df_1[['date','sentiment score',ticker_symbol]]
-    df_1=df_1.set_index('date')
-    df_1=df_1[df_1[ticker_symbol].notna()]
+    cDataFrame[ticker_symbol] = target_ticker_values
+    cDataFrame = cDataFrame[['date', 'sentiment score', ticker_symbol]]
+    cDataFrame = cDataFrame.set_index('date')
+    cDataFrame = cDataFrame[cDataFrame[ticker_symbol].notna()]
 
-    df_1.plot(secondary_y='sentiment score', figsize=(16, 10))
+    cDataFrame.plot(secondary_y='sentiment score', figsize=(16, 10))
 
-    ## fourier transform
-
-    close_fft = np.fft.fft(np.asarray(df_1['sentiment score'].tolist()))
-    fft_df = pd.DataFrame({'fft':close_fft})
+    # Apply Fourier Transoframtions to summarize our results
+    close_fft = np.fft.fft(np.asarray(cDataFrame['sentiment score'].tolist()))
+    fft_df = pd.DataFrame({'fft': close_fft})
     fft_df['absolute'] = fft_df['fft'].apply(lambda x: np.abs(x))
     fft_df['angle'] = fft_df['fft'].apply(lambda x: np.angle(x))
     fft_list = np.asarray(fft_df['fft'].tolist())
+    fft_list_m10 = np.copy(fft_list)
+    fft_list_m10[5:-5] = 0
+    cDataFrame['fourier 5'] = np.fft.ifft(fft_list_m10)
+    #cDataFrame[['sentiment score', 'fourier 5']].plot(figsize=(16, 10))
 
-    for num_ in [5, 10, 15, 20]:
-        fft_list_m10= np.copy(fft_list); fft_list_m10[num_:-num_]=0
-        df_1['fourier '+str(num_)]=np.fft.ifft(fft_list_m10)
+    # Normalize our Forier transforamtions.
+    sc = MinMaxScaler(feature_range=(0, 1))
+    cDataFrame['norm_price'] = sc.fit_transform(
+        cDataFrame[ticker_symbol].to_numpy().reshape(-1, 1))
+    cDataFrame[ticker_symbol + ' log'] = np.log(
+        cDataFrame[ticker_symbol]/cDataFrame[ticker_symbol].shift(1))
+    cDataFrame['norm_sentiment'] = sc.fit_transform(
+        cDataFrame['sentiment score'].to_numpy().reshape(-1, 1))
+    cDataFrame['norm_fourier5'] = sc.fit_transform(np.asarray(
+        list([(float(x)) for x in cDataFrame['fourier 5'].to_numpy()])).reshape(-1, 1))
+    cDataFrame[['norm_price', 'norm_sentiment',
+                'norm_fourier5']].plot(figsize=(16, 10))
 
-    df_1[['sentiment score', 'fourier 5', 'fourier 10', 'fourier 15', 'fourier 20']].plot(figsize=(16, 10))
-
-    df_1[[ticker_symbol, 'fourier 20']].plot(secondary_y='fourier 20', figsize=(16, 10))
-
-    #normalize
-    from sklearn.preprocessing import MinMaxScaler
-    sc= MinMaxScaler(feature_range=(0,1))
-    df_1['norm_price']=sc.fit_transform(df_1[ticker_symbol].to_numpy().reshape(-1, 1))
-    df_1[ticker_symbol + ' log']=np.log(df_1[ticker_symbol]/df_1[ticker_symbol].shift(1))
-    df_1['norm_sentiment']=sc.fit_transform(df_1['sentiment score'].to_numpy().reshape(-1, 1))
-    df_1['norm_fourier5']=sc.fit_transform(np.asarray(list([(float(x)) for x in df_1['fourier 5'].to_numpy()])).reshape(-1, 1))
-    df_1['norm_fourier10']=sc.fit_transform(np.asarray(list([(float(x)) for x in df_1['fourier 10'].to_numpy()])).reshape(-1, 1))
-    df_1['norm_fourier15']=sc.fit_transform(np.asarray(list([(float(x)) for x in df_1['fourier 15'].to_numpy()])).reshape(-1, 1))
-    df_1['norm_fourier20']=sc.fit_transform(np.asarray(list([(float(x)) for x in df_1['fourier 20'].to_numpy()])).reshape(-1, 1))
-
-    
-    df_1[['norm_price', 'norm_sentiment', 'norm_fourier5', 'norm_fourier20']].plot(figsize=(16, 10))
-
+    # Generate a PDF of our current chart of sentiments
     import datetime
-    filename = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+    filename = datetime.datetime.now().strftime("%Y %m %d %H %M %S")
+    plt.title(start_date + " to "+end_date, fontsize=15)
+    plt.suptitle(ticker_symbol.upper() + ' Sentiment Analysis', fontsize=29)
+    plt.savefig(ticker_symbol.upper() + "_" + start_date.replace('/',
+                '-') + "_" + end_date.replace('/', '-')+'_'+filename+'.pdf')
 
-    plt.savefig(ticker_symbol + "_" + after_date.replace('/','-') +"_"+ before_date.replace('/','-')+'_'+filename+'.pdf')
+
+# Temporary until we have argparse setup
+# ticker_symbols = ['spy', 'tsla', 'shop']
+ticker_symbols = args.tickers
+ticker_symbol = args.ticker
+original_df_1 = dataFrame_1
+if ticker_symbol == None:
+    for ticker in ticker_symbols:
+        plot_fft(original_df_1, ticker)
+else:
+    plot_fft(original_df_1, ticker_symbol)
 
 
-ticker_symbol = 'spy'
-original_df_1 = df_1
-
-plot_fft(original_df_1, ticker_symbol)
-
+#plot_fft(original_df_1, ticker)
+# Clean out the data we have from bloomberg
+os.remove('Signal_WSB_ema.csv')
 print()
+
 """---
 
 ### This notebook is built upon the works of,
@@ -363,4 +327,3 @@ print()
 1.   [Can we actually predict market change by analyzing Reddit’s /r/wallstreetbets?](https://medium.com/the-innovation/can-we-actually-predict-market-change-by-analyzing-reddits-r-wallstreetbets-9d7716516c8e)
 2.   [Sentiment Analysis for Trading with Reddit Text Data](https://medium.com/analytics-vidhya/sentiment-analysis-for-trading-with-reddit-text-data-73729c931d01)
 """
-
